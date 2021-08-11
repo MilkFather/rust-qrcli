@@ -1,0 +1,7 @@
+[package]
+name = "rust-qrcli"
+version = "0.0.1"
+authors = ["MilkFather"]
+edition = "2018"
+
+[dependencies]
