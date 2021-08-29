@@ -3,10 +3,10 @@ use std::cmp::{min, max};
 use bitvec::prelude::*;
 use encoding_rs::{WINDOWS_1252, SHIFT_JIS};
 
-use crate::ec::ErrorCorrectionLevel;
+use crate::ec::{ErrorCorrectionLevel, get_eclength};
 use crate::version::test_version_possible;
 
-#[derive(PartialEq, PartialOrd, Eq, Ord, Debug)]
+#[derive(PartialEq, PartialOrd, Eq, Ord, Clone, Copy, Debug)]
 pub enum EncodeMode {
 	Numeric = 0,
 	Alphanumeric = 1,
@@ -35,7 +35,7 @@ pub fn test_encode_mode(text: &String) -> Option<EncodeMode> {
 		} else {
 			let c_str = c.to_string();
 			let (encvec, _, err) = WINDOWS_1252.encode(c_str.as_str());
-			if !err && !(0x80_u8 <= encvec[0] && encvec[0] <= 0x9f_u8) {
+			if !err && !(0x80_u8 <= encvec[0] && encvec[0] <= 0x9f_u8) && !(encvec[0] <= 0x1f_u8) {
 				this_char_mode = EncodeMode::Byte;
 			} else {
 				let (encvec, _enc, err) = SHIFT_JIS.encode(c_str.as_str());
@@ -60,23 +60,96 @@ pub fn test_encode_mode(text: &String) -> Option<EncodeMode> {
 	return Some(result_mode);
 }
 
-fn encode_numeric(text: &String, bb: &BitBox<Msb0, u8>, offset: usize) -> Result<usize, String> {
-
+fn encode_numeric(text: &String, bb: &mut BitBox<Msb0, u8>, offset: usize) -> Result<usize, String> {
+	let mut written: usize = 0;
+	let mut iter = text.chars();
+	let mut stored = 0;
+	let mut stored_dig = 0;
+	loop {
+		let t_dig = iter.next();
+		if t_dig.is_none() { break }
+		let t_dig = t_dig.unwrap().to_digit(10);
+		if t_dig.is_none() { return Err(String::from("Cannot encode in numeric mode")) }
+		let t_dig = t_dig.unwrap();
+		stored = stored * 10 + t_dig;
+		stored_dig += 1;
+		if stored_dig >= 3 {
+			if stored < 10 { bb[offset + written..offset + written + 4].store_be(stored); written += 4; }
+			else if stored < 100 { bb[offset + written..offset + written + 7].store_be(stored); written += 7; }
+			else { bb[offset + written..offset + written + 10].store_be(stored); written += 10; }
+			stored = 0;
+			stored_dig = 0;
+		}
+	}
+	if stored_dig >= 1 {
+		if stored < 10 { bb[offset + written..offset + written + 4].store_be(stored); written += 4; }
+		else if stored < 100 { bb[offset + written..offset + written + 7].store_be(stored); written += 7; }
+		else { bb[offset + written..offset + written + 10].store_be(stored); written += 10; }
+	}
+	return Ok(written);
 }
 
-fn encode_alphanumeric(text: &String, bb: &BitBox<Msb0, u8>, offset: usize) -> Result<usize, String> {
+fn encode_alphanumeric(text: &String, bb: &mut BitBox<Msb0, u8>, offset: usize) -> Result<usize, String> {
+	let mut written: usize = 0;
+	let mut iter = text.chars();
+	loop {
+		let t_c1 = iter.next();
+		let t_c2 = iter.next();
 
+		if t_c1.is_none() { break }
+		else if t_c2.is_none() { 
+			let t_c1 = ALPHANUMERIC_TABLE.iter().position(|&x| x == t_c1.unwrap());
+			if t_c1.is_none() { return Err(String::from("Cannot encode in alphanumeric mode")) }
+			bb[offset + written..offset + written + 6].store_be(t_c1.unwrap());
+			written += 6;
+			break;
+		} else {
+			let t_c1 = ALPHANUMERIC_TABLE.iter().position(|&x| x == t_c1.unwrap());
+			let t_c2 = ALPHANUMERIC_TABLE.iter().position(|&x| x == t_c2.unwrap());
+			if t_c1.is_none() || t_c2.is_none() { return Err(String::from("Cannot encode in alphanumeric mode")) }
+			bb[offset + written..offset + written + 11].store_be(t_c1.unwrap() * 45 + t_c2.unwrap());
+			written += 11;
+		}
+	}
+	return Ok(written);
 }
 
-fn encode_byte(text: &String, bb: &BitBox<Msb0, u8>, offset: usize) -> Result<usize, String> {
-
+fn encode_byte(text: &String, bb: &mut BitBox<Msb0, u8>, offset: usize) -> Result<usize, String> {
+	let mut written: usize = 0;
+	let (encvec, _, err) = WINDOWS_1252.encode(text.as_str());
+	if err { return Err(String::from("Cannot encode in byte mode")) }
+	for code in encvec.iter() {
+		if (0x80_u8 <= *code && *code <= 0x9f_u8) || (*code <= 0x1f_u8) {
+			return Err(String::from("Cannot encode in byte mode"))
+		} else {
+			bb[offset + written..offset + written + 8].store_be(*code);
+			written += 8;
+		}
+	}
+	return Ok(written);
 }
 
-fn encode_kanji(text: &String, bb: &BitBox<Msb0, u8>, offset: usize) -> Result<usize, String> {
-
+fn encode_kanji(text: &String, bb: &mut BitBox<Msb0, u8>, offset: usize) -> Result<usize, String> {
+	let mut written: usize = 0;
+	for c in text.chars() {
+		let c_str = c.to_string();
+		let (encvec, _enc, err) = SHIFT_JIS.encode(c_str.as_str());
+		if err { return Err(String::from("Cannot encode in kanji mode")) }
+		else if encvec.len() > 2 { return Err(String::from("Cannot encode in kanji mode")) }
+		else {
+			let mut enc: u16 = ((encvec[0] as u16) << 8) | (encvec[1] as u16);
+			if (0x8140_u16 <= enc) && (enc <= 0x9ffc_u16) { enc = enc - 0x8140_u16 }
+			else if (0xe040_u16 <= enc) && (enc <= 0xebbf_u16) { enc = enc - 0xc140_u16 }
+			else { return Err(String::from("Cannot encode in kanji mode")) }
+			let comp = ((enc & 0xff00) >> 8) * 0xc0_u16 + (enc & 0x00ff_u16);
+			bb[offset + written..offset + written + 13].store_be(comp);
+			written += 13;
+		}
+	}
+	return Ok(written);
 }
 
-fn encode_textmode(bv: &BitBox<Msb0, u8>, encode_mode: EncodeMode, version: u8) {
+fn encode_textmode(bv: &mut BitBox<Msb0, u8>, encode_mode: &EncodeMode) {
 	match encode_mode {
 		EncodeMode::Numeric => { bv[..4].store_be(0b_0001_u8) },
 		EncodeMode::Alphanumeric => { bv[..4].store_be(0b_0010_u8) },
@@ -104,25 +177,24 @@ fn get_block_and_codewords_count(eclevel: ErrorCorrectionLevel, version: u8) -> 
 }
 
 pub fn encode_text(text: &String, encode_mode: EncodeMode, eclevel: ErrorCorrectionLevel, version: u8) -> Result<Vec<Vec<u8>>, String> {
-	if version > 40 || version < 1 { return Err(String::from("Impossible version")) }
-	if !test_version_possible(text.len() as u32, encode_mode, eclevel, version) { return Err(String::from("Cannot fit into version")) }
+	if !test_version_possible(text.len(), encode_mode, eclevel, version) { return Err(String::from("Cannot fit into version")) }
 
 	let ((block_in_g1, block_in_g2), (codew_in_b1, codew_in_b2)) = get_block_and_codewords_count(eclevel, version);
 	let total_bits: usize = 8 * ((block_in_g1 as usize) * (codew_in_b1 as usize) + (block_in_g2 as usize) * (codew_in_b2 as usize));
 	let mut bv = bitbox![Msb0, u8; 0; total_bits as usize];
 	let mut idxtrack: usize = 0;
 
-	encode_textmode(&bv, encode_mode, version);
+	encode_textmode(&mut bv, &encode_mode);
 	idxtrack += 4;
 	bv[idxtrack..idxtrack + get_len_size(encode_mode, version)].store_be(text.len() as u32);
 	idxtrack += get_len_size(encode_mode, version);
 
 	let txtresult = {
 		match encode_mode {
-			EncodeMode::Numeric => { encode_numeric(text, &bv, idxtrack) },
-			EncodeMode::Alphanumeric => { encode_alphanumeric(text, &bv, idxtrack) },
-			EncodeMode::Byte => { encode_byte(text, &bv, idxtrack) },
-			EncodeMode::Kanji => { encode_kanji(text, &bv, idxtrack) }
+			EncodeMode::Numeric => { encode_numeric(text, &mut bv, idxtrack) },
+			EncodeMode::Alphanumeric => { encode_alphanumeric(text, &mut bv, idxtrack) },
+			EncodeMode::Byte => { encode_byte(text, &mut bv, idxtrack) },
+			EncodeMode::Kanji => { encode_kanji(text, &mut bv, idxtrack) }
 		}
 	};
 	match txtresult {
@@ -132,12 +204,12 @@ pub fn encode_text(text: &String, encode_mode: EncodeMode, eclevel: ErrorCorrect
 			bv[idxtrack..idxtrack + min(4, (total_bits as usize) - idxtrack)].store_be(0b_0000_u8);
 			idxtrack += min(4, total_bits - idxtrack);
 
-			if (idxtrack + 1) % 8 != 0 {
-				bv[idxtrack..idxtrack + 8 - ((idxtrack + 1) % 8)].store_be(0b_00000000_u8);
-				idxtrack += 8 - ((idxtrack + 1) % 8);
+			if idxtrack % 8 != 0 {
+				bv[idxtrack..idxtrack + 8 - (idxtrack % 8)].store_be(0b_00000000_u8);
+				idxtrack += 8 - (idxtrack % 8);
 			}
 			while idxtrack + 1 < total_bits {
-				bv[idxtrack..idxtrack + 8].store_be(0b_111101100_u8);
+				bv[idxtrack..idxtrack + 8].store_be(0b_11101100_u8);
 				idxtrack += 8;
 				if idxtrack + 1 < total_bits {
 					bv[idxtrack..idxtrack + 8].store_be(0b_00010001_u8);
@@ -146,23 +218,95 @@ pub fn encode_text(text: &String, encode_mode: EncodeMode, eclevel: ErrorCorrect
 			}
 
 			let buf = bv.as_slice();
-			let result: Vec<Vec<u8>> = Vec::new();
+			let mut result: Vec<Vec<u8>> = Vec::new();
 			let mut glb_idx: usize = 0;
 			for _ in 0..block_in_g1 {
-				let mut tmpvec = Vec::<u8>::new();
+				let mut blockvec = Vec::<u8>::new();
 				for _ in 0..codew_in_b1 {
-					tmpvec.push(buf[glb_idx]);
+					blockvec.push(buf[glb_idx]);
 					glb_idx += 1;
 				}
+				result.push(blockvec);
 			}
 			for _ in 0..block_in_g2 {
-				let mut tmpvec = Vec::<u8>::new();
+				let mut blockvec = Vec::<u8>::new();
 				for _ in 0..codew_in_b2 {
-					tmpvec.push(buf[glb_idx]);
+					blockvec.push(buf[glb_idx]);
 					glb_idx += 1;
 				}
+				result.push(blockvec);
 			}
 			return Ok(result);
 		}
+	}
+}
+
+pub fn compile_pool(codeword_pool: &Vec<Vec<u8>>, ec_pool: &Vec<Vec<u8>>, eclevel: ErrorCorrectionLevel, version: u8) -> BitBox<Msb0, u8> {
+	let mut interleaved: Vec<u8> = Vec::<u8>::new();
+	let ((block_in_g1, block_in_g2), (codew_in_b1, codew_in_b2)) = get_block_and_codewords_count(eclevel, version);
+
+	for i in 0..max(codew_in_b1, codew_in_b2) {
+		for j in 0..block_in_g1+block_in_g2 {
+			if i as usize > codeword_pool[j as usize].len() {
+				continue;
+			}
+			interleaved.push(codeword_pool[j as usize][i as usize]);
+		}
+	}
+	for i in 0..get_eclength(eclevel, version) {
+		for j in 0..block_in_g1+block_in_g2 {
+			if i > ec_pool[j as usize].len() {
+				continue;
+			}
+			interleaved.push(ec_pool[j as usize][i]);
+		}
+	}
+
+	let mut bvec = BitVec::<Msb0, u8>::from_vec(interleaved);
+	let extra_bits: usize = {
+		if version <= 1 { 0 }
+		else if version <= 6 { 7 }
+		else if version <= 13 { 0 }
+		else if version <= 20 { 3 }
+		else if version <= 27 { 4 }
+		else if version <= 34 { 3 }
+		else if version <= 40 { 0 }
+		else { panic!("version internal error") }
+	};
+	bvec.reserve_exact(extra_bits);
+	for _ in 0..extra_bits {
+		bvec.push(false);
+	}
+	bvec.into_boxed_bitslice()
+}
+
+/* For Testing */
+#[cfg(test)]
+mod tests {
+    use crate::{EncodeMode, encode::encode_text, test_encode_mode};
+
+	#[test]
+	fn encode_mode_test() {
+		assert_eq!(Some(EncodeMode::Numeric), test_encode_mode(&String::from("8675309")));
+		assert_eq!(Some(EncodeMode::Alphanumeric), test_encode_mode(&String::from("HELLO WORLD")));
+		assert_eq!(Some(EncodeMode::Byte), test_encode_mode(&String::from("Hello, world!")));
+		assert_eq!(Some(EncodeMode::Kanji), test_encode_mode(&String::from("茗荷")));
+		//assert_eq!(None, test_encode_mode(&String::from("茗荷12345")));
+	}
+
+	#[test]
+	fn encode_alphanumeric_test() {
+		assert_eq!(
+			encode_text(&String::from("HELLO WORLD"), EncodeMode::Alphanumeric, crate::ErrorCorrectionLevel::Q, 1).unwrap(), 
+			vec![
+				vec![0b00100000, 0b01011011, 0b00001011, 0b01111000, 0b11010001, 0b01110010, 0b11011100, 0b01001101, 0b01000011, 0b01000000, 0b11101100, 0b00010001, 0b11101100]
+			]
+		);
+		assert_eq!(
+			encode_text(&String::from("HELLO WORLD"), EncodeMode::Alphanumeric, crate::ErrorCorrectionLevel::M, 1).unwrap(), 
+			vec![
+				vec![32, 91, 11, 120, 209, 114, 220, 77, 67, 64, 236, 17, 236, 17, 236, 17]
+			]
+		);
 	}
 }

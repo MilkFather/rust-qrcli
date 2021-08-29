@@ -9,3 +9,5 @@ edition = "2018"
 
 bitvec = "^0.22.3"
 encoding_rs = "^0.8.28"
+ndarray = { version = "^0.15.3", features = ["rayon"] }
+rayon = "^1.5.1"
