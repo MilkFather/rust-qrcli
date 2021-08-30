@@ -14,10 +14,5 @@ pub use crate::{
 	},
 };
 
-#[cfg(feature = "image")]
-pub use crate::image::{
-	QrSizeConfig,
-};
-
 #[cfg(feature = "serde")]
 pub use crate::serde::*;

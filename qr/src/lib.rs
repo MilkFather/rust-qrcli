@@ -4,9 +4,7 @@ mod matrix;
 pub mod prelude;
 mod qr;
 mod version;
-
-#[cfg(feature = "image")]
-mod image;
+pub mod writer;
 
 #[cfg(feature = "serde")]
 mod serde;
