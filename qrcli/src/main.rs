@@ -6,7 +6,6 @@ fn main() {
 	match qr {
 		Err(s) => { println!("{}", s) },
 		Ok(q) => {
-			println!("{}", q.to_json());
 			q.to_image_luma(QrSizeConfig::BitSize(16), &[0], &[255], 4).save("hello.png").unwrap();
 		}
 	}
