@@ -7,5 +7,4 @@ edition = "2018"
 
 [dependencies]
 qr = { path = '../qr', features = ["image"] }
-ndarray = "^0.15"
-image = "^0.23"
+clap = "^2.33"
