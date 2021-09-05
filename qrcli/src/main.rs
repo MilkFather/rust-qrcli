@@ -25,7 +25,7 @@ fn main() {
 		"H" => ErrorCorrectionLevel::H,
 		_ => { panic!("Invalid error correction level bypassed argument check"); }
 	};
-	let perf_ver = if arg.value_of("ver").unwrap() == "auto" {
+	let perf_ver = if arg.value_of("ver").unwrap().to_lowercase() == "auto" {
 		None 
 	} else {
 		let raw = value_t!(arg, "ver", u8).unwrap_or_else(|e| {
