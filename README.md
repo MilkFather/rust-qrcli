@@ -1,6 +1,8 @@
 # Rust-QRCLI
 A [command-line interface](https://en.wikipedia.org/wiki/Command-line_interface) for the [Rust-QR](/MilkFather/rust-qr) repository
 
+[![Rust](https://github.com/MilkFather/rust-qrcli/actions/workflows/rust.yml/badge.svg)](https://github.com/MilkFather/rust-qrcli/actions/workflows/rust.yml)
+
 ## Features
 * A simple but powerful syntax
 * Supports image saving
