@@ -10,14 +10,16 @@ Simplist usage:
 ```
 qrcli "hello world"
 ```
-Further options including encoding control, error correction level control, QR code version control and output image sizing control. Run
+Further options include encoding control, error correction level control, QR code version control and output image sizing control. Run
 ```
 qrcli --help
 ```
 for the full documentation.
 
 ## Build by yourself
-Building the project is simple. You need to download the whole repository (including the submodule rust-qr) by
+Building the project is simple. You need to have the basic Rust toolchain (rustc, cargo, etc.) installed.
+
+First, download the whole repository by
 ```
 git fetch --recursive "https://github.com/MilkFather/rust-qrcli.git"
 ```
